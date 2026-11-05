@@ -1,0 +1,22 @@
+# Необязательно: Render Blueprint (New → Blueprint). Можно и просто настроить сервис вручную — см. README.
+services:
+  - type: web
+    name: dvoe
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: BOT_TOKEN
+        sync: false # введи в панели Render
+      - key: DATABASE_URL
+        sync: false # введи в панели Render
+      - key: CRON_KEY
+        generateValue: true
+      - key: APP_TZ
+        value: Europe/Kyiv
+      - key: THOUGHT_COOLDOWN_MIN
+        value: "180"
