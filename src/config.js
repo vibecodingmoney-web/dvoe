@@ -21,6 +21,11 @@ export const cfg = {
   thoughtCooldownMin: Number(process.env.THOUGHT_COOLDOWN_MIN) || 180,
   // Только для локальной отладки вне Telegram. На проде НЕ включать.
   devAuth: process.env.DEV_AUTH === '1' && process.env.NODE_ENV !== 'production',
+  // Telegram id админов через запятую (узнать свой id: написать боту /id). Админ видит все пары и статистику.
+  adminIds: (process.env.ADMIN_IDS || '')
+    .split(/[\s,;]+/)
+    .map(Number)
+    .filter((n) => Number.isSafeInteger(n) && n > 0),
   // Заполняется при старте из getMe
   botUsername: '',
 };
@@ -37,4 +42,9 @@ export function inviteLink(code) {
 export function shareUrl(link) {
   const text = 'Присоединяйся ко мне в «Двое» — нашем маленьком мире ❤️';
   return `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`;
+}
+
+/** Является ли пользователь админом (проверяется только на сервере, по подписанному Telegram id). */
+export function isAdmin(id) {
+  return cfg.adminIds.includes(Number(id));
 }

@@ -49,33 +49,26 @@ export async function claim(key) {
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS pairs (
-  id          BIGSERIAL PRIMARY KEY,
-  code        TEXT UNIQUE NOT NULL,        -- код приглашения
-  start_date  TEXT NOT NULL,               -- дата начала отношений, YYYY-MM-DD
-  owner_id    BIGINT NOT NULL,             -- участник А (тот, кто создал пару)
-  joined_at   TIMESTAMPTZ,                 -- когда присоединился Б
-  joined_on   TEXT,                        -- та же дата строкой (по APP_TZ), от неё идёт нумерация вопросов
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  id            BIGSERIAL PRIMARY KEY,
+  code          TEXT UNIQUE NOT NULL,        -- код приглашения
+  start_date    TEXT NOT NULL,               -- дата начала отношений, YYYY-MM-DD
+  wedding_date  TEXT,                        -- дата свадьбы (необязательная), YYYY-MM-DD
+  owner_id      BIGINT NOT NULL,             -- участник А (тот, кто создал пару)
+  joined_at     TIMESTAMPTZ,                 -- когда присоединился Б
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS users (
-  id          BIGINT PRIMARY KEY,          -- Telegram user id
+  id          BIGINT PRIMARY KEY,            -- Telegram user id
   name        TEXT NOT NULL,
+  age         SMALLINT,                      -- возраст (14–99)
+  gender      TEXT,                          -- 'm' или 'f'
   pair_id     BIGINT REFERENCES pairs(id) ON DELETE SET NULL,
   can_notify  BOOLEAN NOT NULL DEFAULT FALSE,
   last_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS users_pair_idx ON users(pair_id);
-
-CREATE TABLE IF NOT EXISTS answers (
-  pair_id     BIGINT NOT NULL REFERENCES pairs(id) ON DELETE CASCADE,
-  q_date      TEXT NOT NULL,               -- день вопроса YYYY-MM-DD
-  user_id     BIGINT NOT NULL,
-  body        TEXT NOT NULL,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (pair_id, q_date, user_id)
-);
 
 CREATE TABLE IF NOT EXISTS thoughts (
   id          BIGSERIAL PRIMARY KEY,
@@ -92,6 +85,51 @@ CREATE TABLE IF NOT EXISTS notif_log (
   key         TEXT PRIMARY KEY,
   sent_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Памятные даты пары (календарь).
+CREATE TABLE IF NOT EXISTS events (
+  id           BIGSERIAL PRIMARY KEY,
+  pair_id      BIGINT NOT NULL REFERENCES pairs(id) ON DELETE CASCADE,
+  title        TEXT NOT NULL,
+  emoji        TEXT NOT NULL DEFAULT '💞',
+  on_date      TEXT NOT NULL,                -- YYYY-MM-DD
+  repeat_kind  TEXT NOT NULL DEFAULT 'none', -- 'none' | 'yearly'
+  note         TEXT NOT NULL DEFAULT '',
+  remind       BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by   BIGINT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS events_pair_idx ON events(pair_id);
+
+-- Общий питомец пары: сытость и настроение хранятся на момент stats_at и «тают» со временем.
+CREATE TABLE IF NOT EXISTS pets (
+  pair_id     BIGINT PRIMARY KEY REFERENCES pairs(id) ON DELETE CASCADE,
+  type        TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  xp          INT NOT NULL DEFAULT 0,
+  fullness    REAL NOT NULL DEFAULT 70,
+  joy         REAL NOT NULL DEFAULT 70,
+  stats_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  adopted_by  BIGINT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Журнал заботы: для пауз между действиями и бонуса «позаботились оба».
+CREATE TABLE IF NOT EXISTS pet_log (
+  id          BIGSERIAL PRIMARY KEY,
+  pair_id     BIGINT NOT NULL REFERENCES pairs(id) ON DELETE CASCADE,
+  user_id     BIGINT NOT NULL,
+  kind        TEXT NOT NULL,
+  day         TEXT NOT NULL,                 -- день по APP_TZ
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS pet_log_pair_idx ON pet_log(pair_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS pet_log_user_idx ON pet_log(user_id, kind, created_at DESC);
+
+-- Миграции для баз, созданных старой версией (данные не удаляем, только добавляем).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS age SMALLINT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;
+ALTER TABLE pairs ADD COLUMN IF NOT EXISTS wedding_date TEXT;
 `;
 
 export async function initDb() {

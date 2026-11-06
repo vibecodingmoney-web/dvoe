@@ -1,97 +1,71 @@
-// Бизнес-логика: пары, вопрос дня, «Думаю о тебе». Роуты в server.js только вызывают эти функции.
+// Бизнес-логика: пары, профили, «Думаю о тебе», состояние главного экрана.
+// Календарь — в events.js, питомец — в pet.js. Роуты в server.js только вызывают эти функции.
 import crypto from 'node:crypto';
 import { query, tx } from './db.js';
-import { cfg, inviteLink, shareUrl } from './config.js';
+import { cfg, inviteLink, shareUrl, isAdmin } from './config.js';
 import { todayStr, daysBetween, addDays, diffYMD, isValidDate } from './dates.js';
 import { milestoneInfo } from './milestones.js';
-import { PHRASES, QUESTIONS } from './content.js';
-import { cleanName, pick, esc } from './util.js';
+import { upcoming, calendarItems, weddingInfo } from './calendar.js';
+import { PHRASES } from './content.js';
+import { cleanName, parseAge, parseGender, pick, esc } from './util.js';
 import { notify, openAppKb } from './bot.js';
+import { HttpError } from './errors.js';
+import { loadPairContext, loadActiveContext } from './context.js';
+import { loadEvents } from './events.js';
+import { petSummary } from './pet.js';
 
-export class HttpError extends Error {
-  constructor(status, code, extra = {}) {
-    super(code);
-    this.status = status;
-    this.code = code;
-    this.extra = extra;
-  }
-}
+export { HttpError };
 
 const CODE_RE = /^[A-Za-z0-9_-]{6,16}$/;
 const MIN_DATE = '1950-01-01';
-// «Сегодня» у человека может быть на день впереди, чем в APP_TZ — разрешаем запас в сутки.
-const MAX_ANSWER = 600;
 
-/* ---------- общие помощники ---------- */
+/* ---------- проверки ---------- */
 
-export async function getMembers(pairId) {
-  const r = await query('SELECT id, name FROM users WHERE pair_id = $1 ORDER BY created_at, id', [pairId]);
-  return r.rows;
+/** Дата начала отношений: корректная, не раньше 1950 и не «завтра» (запас в сутки: у человека «сегодня» может быть впереди APP_TZ). */
+function checkStartDate(startDate) {
+  if (!isValidDate(startDate) || startDate > addDays(todayStr(), 1) || startDate < MIN_DATE) throw new HttpError(400, 'bad_date');
 }
 
-/** Вопрос дня для пары: нумерация идёт от дня, когда присоединился Б. */
-export function questionFor(joinedOn, date) {
-  if (!joinedOn) return null;
-  const n = daysBetween(joinedOn, date);
-  if (n < 0) return null;
-  const index = n % QUESTIONS.length;
-  return { number: n + 1, index, text: QUESTIONS[index] };
+/** Дата свадьбы: необязательная (пусто → null). Не раньше начала отношений, не дальше 20 лет вперёд. */
+export function parseWedding(raw, startDate) {
+  if (raw === undefined || raw === null || raw === '') return null;
+  if (!isValidDate(raw) || raw < startDate || raw > addDays(todayStr(), 365 * 20)) throw new HttpError(400, 'bad_wedding');
+  return raw;
 }
 
-/** Серия дней подряд, когда оба ответили на вопрос. Сегодняшний день не обрывает серию, пока не закончился. */
-export async function computeStreak(pairId, today) {
-  const r = await query(
-    `SELECT q_date FROM answers WHERE pair_id = $1
-     GROUP BY q_date HAVING COUNT(*) = 2
-     ORDER BY q_date DESC LIMIT 400`,
-    [pairId],
-  );
-  const days = new Set(r.rows.map((x) => x.q_date));
-  let cursor = days.has(today) ? today : addDays(today, -1);
-  let streak = 0;
-  while (days.has(cursor)) {
-    streak += 1;
-    cursor = addDays(cursor, -1);
-  }
-  return streak;
-}
-
-async function loadPairContext(user) {
-  if (!user || !user.pair_id) throw new HttpError(409, 'no_pair');
-  const pair = (await query('SELECT * FROM pairs WHERE id = $1', [user.pair_id])).rows[0];
-  if (!pair) throw new HttpError(409, 'no_pair');
-  const members = await getMembers(pair.id);
-  const partner = members.find((m) => m.id !== user.id) || null;
-  return { pair, partner };
-}
-
-async function loadActiveContext(user) {
-  const ctx = await loadPairContext(user);
-  if (!ctx.pair.joined_at || !ctx.partner) throw new HttpError(409, 'not_active');
-  return ctx;
+/** Имя, возраст и пол: все три обязательны при регистрации. */
+function checkProfile({ name, age, gender }) {
+  const cleanN = cleanName(name);
+  if (!cleanN) throw new HttpError(400, 'bad_name');
+  const ageN = parseAge(age);
+  if (ageN === null) throw new HttpError(400, 'bad_age');
+  const genderV = parseGender(gender);
+  if (!genderV) throw new HttpError(400, 'bad_gender');
+  return { name: cleanN, age: ageN, gender: genderV };
 }
 
 /* ---------- создание пары и приглашение ---------- */
 
-export async function createPair(tgUser, rawName, startDate) {
-  const name = cleanName(rawName);
-  if (!name) throw new HttpError(400, 'bad_name');
-  if (!isValidDate(startDate) || startDate > addDays(todayStr(), 1) || startDate < MIN_DATE) throw new HttpError(400, 'bad_date');
+export async function createPair(tgUser, body = {}) {
+  const profile = checkProfile(body);
+  checkStartDate(body.startDate);
+  const weddingDate = parseWedding(body.weddingDate, body.startDate);
 
   await tx(async (c) => {
     const existing = await c.query('SELECT pair_id FROM users WHERE id = $1 FOR UPDATE', [tgUser.id]);
     if (existing.rows[0]?.pair_id) throw new HttpError(409, 'already_in_pair');
 
     const code = crypto.randomBytes(6).toString('base64url'); // 8 символов, подходит для startapp
-    const pair = await c.query('INSERT INTO pairs(code, start_date, owner_id) VALUES ($1, $2, $3) RETURNING id', [
+    const pair = await c.query('INSERT INTO pairs(code, start_date, wedding_date, owner_id) VALUES ($1, $2, $3, $4) RETURNING id', [
       code,
-      startDate,
+      body.startDate,
+      weddingDate,
       tgUser.id,
     ]);
     await c.query(
-      `INSERT INTO users(id, name, pair_id, can_notify) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, pair_id = EXCLUDED.pair_id`,
-      [tgUser.id, name, pair.rows[0].id, tgUser.allows_write_to_pm === true],
+      `INSERT INTO users(id, name, age, gender, pair_id, can_notify) VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, age = EXCLUDED.age, gender = EXCLUDED.gender, pair_id = EXCLUDED.pair_id`,
+      [tgUser.id, profile.name, profile.age, profile.gender, pair.rows[0].id, tgUser.allows_write_to_pm === true],
     );
   });
 }
@@ -107,11 +81,10 @@ export async function getInvite(user, code) {
   return { valid: true, inviter: owner?.name || '' };
 }
 
-export async function joinPair(tgUser, code, rawName) {
-  const name = cleanName(rawName);
-  if (!name) throw new HttpError(400, 'bad_name');
+export async function joinPair(tgUser, body = {}) {
+  const { code } = body;
+  const profile = checkProfile(body);
   if (!CODE_RE.test(code || '')) throw new HttpError(404, 'invite_not_found');
-  const today = todayStr();
 
   const owner = await tx(async (c) => {
     const existing = await c.query('SELECT pair_id FROM users WHERE id = $1 FOR UPDATE', [tgUser.id]);
@@ -123,18 +96,18 @@ export async function joinPair(tgUser, code, rawName) {
     if (pair.owner_id === tgUser.id) throw new HttpError(400, 'own_invite');
 
     await c.query(
-      `INSERT INTO users(id, name, pair_id, can_notify) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, pair_id = EXCLUDED.pair_id`,
-      [tgUser.id, name, pair.id, tgUser.allows_write_to_pm === true],
+      `INSERT INTO users(id, name, age, gender, pair_id, can_notify) VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, age = EXCLUDED.age, gender = EXCLUDED.gender, pair_id = EXCLUDED.pair_id`,
+      [tgUser.id, profile.name, profile.age, profile.gender, pair.id, tgUser.allows_write_to_pm === true],
     );
-    await c.query('UPDATE pairs SET joined_at = now(), joined_on = $2 WHERE id = $1', [pair.id, today]);
+    await c.query('UPDATE pairs SET joined_at = now() WHERE id = $1', [pair.id]);
     return (await c.query('SELECT id, name FROM users WHERE id = $1', [pair.owner_id])).rows[0];
   });
 
   if (owner) {
     await notify(
       owner.id,
-      `🎉 <b>${esc(name)}</b> теперь с тобой в «Двое»!\n\nВаш общий мир открыт. Загляни — там уже ждёт вопрос дня.`,
+      `🎉 <b>${esc(profile.name)}</b> теперь с тобой в «Двое»!\n\nВаш общий мир открыт. Загляни — можно завести питомца и отметить памятные даты.`,
       openAppKb(),
     );
   }
@@ -168,29 +141,40 @@ async function thoughtState(user, pair) {
   };
 }
 
+const profileComplete = (u) => u.age != null && Boolean(u.gender);
+const person = (u) => ({ name: u.name, age: u.age ?? null, gender: u.gender ?? null });
+
 export async function buildState(user, tgUser) {
+  const today = todayStr();
   if (!user || !user.pair_id) {
-    return { status: 'none', prefillName: tgUser?.first_name || '' };
+    return { status: 'none', today, prefillName: tgUser?.first_name || '', isAdmin: isAdmin(tgUser?.id) };
   }
   const { pair, partner } = await loadPairContext(user);
   const active = Boolean(pair.joined_at && partner);
-  const today = todayStr();
+
+  const events = await loadEvents(pair.id);
   const ms = milestoneInfo(pair.start_date, today);
+  const nextItem = upcoming(pair, events, today, { limit: 1, includeToday: false })[0] || null;
+  // Полоска прогресса есть только у «красивых чисел» — у остальных дат нет понятного «начала пути».
+  const progress = nextItem && ms.next && nextItem.key === `ms:${ms.next.id}` ? ms.next.progress : null;
 
   const home = {
     days: Math.max(0, daysBetween(pair.start_date, today)),
     breakdown: diffYMD(pair.start_date, today),
     startDate: pair.start_date,
-    today: ms.today,
-    next: ms.next,
-    upcoming: ms.upcoming,
-    past: ms.past,
-    streak: 0,
+    wedding: weddingInfo(pair.wedding_date, today),
+    todayItems: calendarItems(pair, events, today, today)
+      .slice(0, 3)
+      .map((i) => ({ kind: i.kind, title: i.title, emoji: i.emoji, years: i.years })),
+    next: nextItem
+      ? { kind: nextItem.kind, title: nextItem.title, emoji: nextItem.emoji, date: nextItem.date, daysLeft: nextItem.daysLeft, years: nextItem.years, progress }
+      : null,
     thought: null,
+    pet: null,
   };
   if (active) {
-    home.streak = await computeStreak(pair.id, today);
     home.thought = await thoughtState(user, pair);
+    home.pet = await petSummary(pair.id);
   }
 
   const isOwner = pair.owner_id === user.id;
@@ -198,9 +182,11 @@ export async function buildState(user, tgUser) {
 
   return {
     status: active ? 'active' : 'waiting',
-    me: { id: user.id, name: user.name, isOwner, canNotify: user.can_notify },
-    partner: partner ? { name: partner.name } : null,
-    pair: { startDate: pair.start_date, inviteLink: link, shareUrl: link ? shareUrl(link) : null },
+    today,
+    isAdmin: isAdmin(user.id),
+    me: { id: user.id, ...person(user), isOwner, canNotify: user.can_notify, profileComplete: profileComplete(user) },
+    partner: partner ? person(partner) : null,
+    pair: { startDate: pair.start_date, weddingDate: pair.wedding_date || null, inviteLink: link, shareUrl: link ? shareUrl(link) : null },
     home,
   };
 }
@@ -246,94 +232,47 @@ export async function sendThought(user) {
   return { phrase, delivered, cooldownSec };
 }
 
-/* ---------- вопрос дня ---------- */
-
-export async function getQuestionState(user) {
-  const { pair, partner } = await loadActiveContext(user);
-  const today = todayStr();
-  const q = questionFor(pair.joined_on, today);
-  if (!q) throw new HttpError(409, 'no_question');
-
-  const rows = (await query('SELECT user_id, body FROM answers WHERE pair_id = $1 AND q_date = $2', [pair.id, today])).rows;
-  const mine = rows.find((r) => r.user_id === user.id) || null;
-  const theirs = rows.find((r) => r.user_id === partner.id) || null;
-
-  return {
-    date: today,
-    number: q.number,
-    text: q.text,
-    mine: mine ? mine.body : null,
-    partnerAnswered: Boolean(theirs),
-    // Ответ любимого человека показываем только после собственного ответа.
-    theirs: mine && theirs ? theirs.body : null,
-  };
-}
-
-export async function answerQuestion(user, text) {
-  const { pair, partner } = await loadActiveContext(user);
-  const body = typeof text === 'string' ? text.trim() : '';
-  if (!body) throw new HttpError(400, 'empty');
-  if (body.length > MAX_ANSWER) throw new HttpError(400, 'too_long');
-
-  const today = todayStr();
-  if (!questionFor(pair.joined_on, today)) throw new HttpError(409, 'no_question');
-
-  const ins = await query(
-    'INSERT INTO answers(pair_id, q_date, user_id, body) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
-    [pair.id, today, user.id, body],
-  );
-  if (ins.rowCount === 0) throw new HttpError(409, 'already_answered');
-
-  const other = await query('SELECT 1 FROM answers WHERE pair_id = $1 AND q_date = $2 AND user_id = $3', [
-    pair.id,
-    today,
-    partner.id,
-  ]);
-  if (other.rowCount > 0) {
-    // Любимый человек ответил раньше — сообщаем ему, что ответы открылись.
-    await notify(partner.id, '✨ Вы оба ответили на вопрос дня — ответы открыты!\n\nЗагляни, это приятно 💞', openAppKb('Посмотреть ответы'));
-  }
-  return getQuestionState(user);
-}
-
-/** Прошлые дни, когда ответили оба (последние 30). */
-export async function getQuestionHistory(user) {
-  const { pair, partner } = await loadActiveContext(user);
-  const today = todayStr();
-  const rows = (
-    await query(
-      `SELECT q_date, user_id, body FROM answers
-       WHERE pair_id = $1 AND q_date < $2
-         AND q_date IN (SELECT q_date FROM answers WHERE pair_id = $1 GROUP BY q_date HAVING COUNT(*) = 2)
-       ORDER BY q_date DESC LIMIT 60`,
-      [pair.id, today],
-    )
-  ).rows;
-
-  const byDate = new Map();
-  for (const r of rows) {
-    if (!byDate.has(r.q_date)) byDate.set(r.q_date, {});
-    byDate.get(r.q_date)[r.user_id === user.id ? 'mine' : 'theirs'] = r.body;
-  }
-  return [...byDate.entries()].slice(0, 30).map(([date, a]) => {
-    const q = questionFor(pair.joined_on, date);
-    return { date, number: q?.number ?? null, text: q?.text ?? '', mine: a.mine ?? '', theirs: a.theirs ?? '', partnerName: partner.name };
-  });
-}
-
 /* ---------- профиль и настройки ---------- */
 
-export async function updateName(user, rawName) {
-  const name = cleanName(rawName);
-  if (!name) throw new HttpError(400, 'bad_name');
-  await query('UPDATE users SET name = $2 WHERE id = $1', [user.id, name]);
+/** Обновить свой профиль: любые из name / age / gender (так же дополняют профиль те, кто регистрировался раньше). */
+export async function updateProfile(user, body = {}) {
+  const sets = [];
+  const values = [user.id];
+  const add = (column, value) => {
+    values.push(value);
+    sets.push(`${column} = $${values.length}`);
+  };
+
+  if (body.name !== undefined) {
+    const name = cleanName(body.name);
+    if (!name) throw new HttpError(400, 'bad_name');
+    add('name', name);
+  }
+  if (body.age !== undefined) {
+    const age = parseAge(body.age);
+    if (age === null) throw new HttpError(400, 'bad_age');
+    add('age', age);
+  }
+  if (body.gender !== undefined) {
+    const gender = parseGender(body.gender);
+    if (!gender) throw new HttpError(400, 'bad_gender');
+    add('gender', gender);
+  }
+  if (!sets.length) throw new HttpError(400, 'nothing_to_update');
+  await query(`UPDATE users SET ${sets.join(', ')} WHERE id = $1`, values);
 }
 
-export async function updateStartDate(user, startDate) {
+/** Даты пары (только создатель): startDate и/или weddingDate (пустая строка или null — убрать дату свадьбы). */
+export async function updatePairDates(user, body = {}) {
   const { pair } = await loadPairContext(user);
   if (pair.owner_id !== user.id) throw new HttpError(403, 'owner_only');
-  if (!isValidDate(startDate) || startDate > addDays(todayStr(), 1) || startDate < MIN_DATE) throw new HttpError(400, 'bad_date');
-  await query('UPDATE pairs SET start_date = $2 WHERE id = $1', [pair.id, startDate]);
+
+  const startDate = body.startDate !== undefined ? body.startDate : pair.start_date;
+  checkStartDate(startDate);
+  const weddingRaw = body.weddingDate !== undefined ? body.weddingDate : pair.wedding_date;
+  const weddingDate = parseWedding(weddingRaw, startDate);
+
+  await query('UPDATE pairs SET start_date = $2, wedding_date = $3 WHERE id = $1', [pair.id, startDate, weddingDate]);
 }
 
 export async function allowNotifications(user) {

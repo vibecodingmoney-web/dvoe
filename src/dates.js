@@ -89,3 +89,11 @@ export function diffYMD(from, to) {
   months = Math.max(0, months);
   return { years: Math.floor(months / 12), months: months % 12, days: daysBetween(addMonths(from, months), to) };
 }
+
+const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+
+/** '2026-11-05' -> '5 ноября 2026' (для сообщений бота) */
+export function fmtDateRu(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return `${d} ${MONTHS_GEN[m - 1]} ${y}`;
+}

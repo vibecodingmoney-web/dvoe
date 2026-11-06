@@ -4,25 +4,25 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { webhookCallback } from 'grammy';
 
-import { cfg } from './config.js';
+import { cfg, isAdmin } from './config.js';
 import { validateInitData, safeEqual } from './auth.js';
 import { initDb, query } from './db.js';
 import { bot } from './bot.js';
+import { adminOverview } from './admin.js';
 import { runTick, startScheduler } from './scheduler.js';
+import { HttpError } from './errors.js';
 import {
-  HttpError,
   buildState,
   createPair,
   getInvite,
   joinPair,
   sendThought,
-  getQuestionState,
-  answerQuestion,
-  getQuestionHistory,
-  updateName,
-  updateStartDate,
+  updateProfile,
+  updatePairDates,
   allowNotifications,
 } from './logic.js';
+import { getCalendar, createEvent, updateEvent, deleteEvent } from './events.js';
+import { getPet, adoptPet, renamePet, petAction } from './pet.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -104,36 +104,60 @@ api.get('/state', wrap(async (req, res) => res.json(await buildState(req.user, r
 api.get('/invite/:code', wrap(async (req, res) => res.json(await getInvite(req.user, req.params.code))));
 
 api.post('/pair/create', wrap(async (req, res) => {
-  await createPair(req.tg, req.body?.name, req.body?.startDate);
+  await createPair(req.tg, req.body);
   res.json({ ok: true });
 }));
 
 api.post('/pair/join', wrap(async (req, res) => {
-  await joinPair(req.tg, req.body?.code, req.body?.name);
+  await joinPair(req.tg, req.body);
   res.json({ ok: true });
 }));
 
 api.post('/thought', wrap(async (req, res) => res.json(await sendThought(req.user))));
 
-api.get('/question', wrap(async (req, res) => res.json(await getQuestionState(req.user))));
-api.post('/question/answer', wrap(async (req, res) => res.json(await answerQuestion(req.user, req.body?.text))));
-api.get('/question/history', wrap(async (req, res) => res.json(await getQuestionHistory(req.user))));
-
+// Профиль (имя, возраст, пол) и даты пары.
 api.patch('/me', wrap(async (req, res) => {
   if (!req.user) throw new HttpError(409, 'no_pair');
-  await updateName(req.user, req.body?.name);
+  await updateProfile(req.user, req.body);
   res.json({ ok: true });
 }));
 
 api.patch('/pair', wrap(async (req, res) => {
-  await updateStartDate(req.user, req.body?.startDate);
+  await updatePairDates(req.user, req.body);
   res.json({ ok: true });
 }));
+
+// Календарь памятных дат.
+const eventId = (req) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new HttpError(404, 'not_found');
+  return id;
+};
+api.get('/calendar', wrap(async (req, res) => res.json(await getCalendar(req.user, String(req.query.month || '')))));
+api.post('/events', wrap(async (req, res) => res.json(await createEvent(req.user, req.body))));
+api.put('/events/:id', wrap(async (req, res) => {
+  await updateEvent(req.user, eventId(req), req.body);
+  res.json({ ok: true });
+}));
+api.delete('/events/:id', wrap(async (req, res) => {
+  await deleteEvent(req.user, eventId(req));
+  res.json({ ok: true });
+}));
+
+// Питомец.
+api.get('/pet', wrap(async (req, res) => res.json(await getPet(req.user))));
+api.post('/pet/adopt', wrap(async (req, res) => res.json(await adoptPet(req.user, req.body?.type, req.body?.name))));
+api.patch('/pet', wrap(async (req, res) => res.json(await renamePet(req.user, req.body?.name))));
+api.post('/pet/action', wrap(async (req, res) => res.json(await petAction(req.user, req.body?.kind, req.body?.food))));
 
 api.post('/notify-allowed', wrap(async (req, res) => {
   if (req.user) await allowNotifications(req.user);
   res.json({ ok: true });
 }));
+
+// Админка: только для id из ADMIN_IDS. Проверка на сервере — кнопка в приложении сама по себе ничего не открывает.
+const adminOnly = (req, _res, next) => (isAdmin(req.tg.id) ? next() : next(new HttpError(403, 'forbidden')));
+api.get('/admin/overview', adminOnly, wrap(async (_req, res) => res.json(await adminOverview())));
 
 app.use('/api', api);
 

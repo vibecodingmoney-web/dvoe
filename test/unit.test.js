@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { validateInitData, safeEqual } from '../src/auth.js';
 import { addDays, addMonths, daysBetween, diffYMD, isValidDate, nowInTz } from '../src/dates.js';
 import { buildMilestones, milestoneInfo } from '../src/milestones.js';
-import { PHRASES, QUESTIONS } from '../src/content.js';
+import { PHRASES } from '../src/content.js';
 import { cleanName, esc, plural } from '../src/util.js';
 
 /* ---------- подпись Telegram ---------- */
@@ -124,17 +124,15 @@ test('годовщины: milestoneInfo — сегодня / ближайшая 
 
 /* ---------- контент ---------- */
 
-test('контент: достаточно фраз и вопросов, без дублей и пустых', () => {
+test('контент: достаточно фраз, без дублей и пустых', () => {
   assert.ok(PHRASES.length >= 100, `фраз ${PHRASES.length}`);
-  assert.ok(QUESTIONS.length >= 90, `вопросов ${QUESTIONS.length}`);
   assert.equal(new Set(PHRASES).size, PHRASES.length);
-  assert.equal(new Set(QUESTIONS).size, QUESTIONS.length);
-  for (const s of [...PHRASES, ...QUESTIONS]) assert.ok(typeof s === 'string' && s.trim().length > 5);
+  for (const s of PHRASES) assert.ok(typeof s === 'string' && s.trim().length > 5);
 });
 
 test('контент: нет явных родовых окончаний (текст подходит любой паре)', () => {
   const gendered = /(^|[\s«"(])(скучал[аи]?|соскучил(ся|ась|ись)|думал[аи]?|любил[аи]?|хотел[аи]?|влюбил(ся|ась|ись)|рад|рада|счастлив|счастлива)([\s.,!?»")]|$)/i;
-  const bad = [...PHRASES, ...QUESTIONS].filter((s) => gendered.test(s));
+  const bad = PHRASES.filter((s) => gendered.test(s));
   assert.deepEqual(bad, []);
 });
 
