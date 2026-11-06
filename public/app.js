@@ -327,8 +327,8 @@ function errorView(e) {
 /* ---- поля профиля: пол и возраст ---- */
 const genderField = (value) => `<div class="field">Пол
   <div class="seg" role="radiogroup">
-    <label class="${value === 'male' ? 'on' : ''}"><input type="radio" name="gender" value="male" ${value === 'male' ? 'checked' : ''} required />👨 Мужской</label>
-    <label class="${value === 'female' ? 'on' : ''}"><input type="radio" name="gender" value="female" ${value === 'female' ? 'checked' : ''} />👩 Женский</label>
+    <label class="${value === 'm' ? 'on' : ''}"><input type="radio" name="gender" value="m" ${value === 'm' ? 'checked' : ''} required />👨 Мужской</label>
+    <label class="${value === 'f' ? 'on' : ''}"><input type="radio" name="gender" value="f" ${value === 'f' ? 'checked' : ''} />👩 Женский</label>
   </div></div>`;
 
 const ageField = (value) => {
@@ -679,7 +679,7 @@ function usView() {
   const d = S.data;
   const m = d.me;
   const pr = d.partner;
-  const gl = (g) => (g === 'male' ? '👨' : g === 'female' ? '👩' : '');
+  const gl = (g) => (g === 'm' ? '👨' : g === 'f' ? '👩' : '');
   return `<div class="card" style="--i:0">
       <div class="sec-title">Вы двое</div>
       <div class="who-row"><span>${gl(m.gender)} ${esc(m.name)}${m.age ? `, ${m.age}` : ''}</span><span class="muted small">это ты</span></div>
