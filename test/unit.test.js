@@ -7,7 +7,7 @@ import { validateInitData, safeEqual } from '../src/auth.js';
 import { addDays, addMonths, daysBetween, diffYMD, isValidDate, nowInTz } from '../src/dates.js';
 import { buildMilestones, milestoneInfo } from '../src/milestones.js';
 import { PHRASES } from '../src/content.js';
-import { cleanName, esc, plural } from '../src/util.js';
+import { cleanName, cleanMessage, esc, plural } from '../src/util.js';
 
 /* ---------- подпись Telegram ---------- */
 
@@ -149,4 +149,19 @@ test('util: plural / esc / cleanName', () => {
   assert.equal(cleanName('  Аня   <script> '), 'Аня script');
   assert.equal(cleanName('x'.repeat(100)).length, 30);
   assert.equal(cleanName(123), '');
+});
+
+test('cleanMessage: личный текст «Думаю о тебе»', () => {
+  assert.equal(cleanMessage('  Скучаю   по тебе  '), 'Скучаю по тебе');
+  assert.equal(cleanMessage('Привет\r\n\r\n\r\n\r\nЛюблю'), 'Привет\n\nЛюблю');
+  assert.equal(cleanMessage('a\u0000b\u0007c'), 'a b c');
+  assert.equal(cleanMessage('1 < 2 & 3 > 2'), '1 < 2 & 3 > 2'); // экранирование делает esc() при выводе
+  assert.equal(cleanMessage('   \n  '), '');
+  assert.equal(cleanMessage(null), '');
+  assert.equal(cleanMessage(42), '');
+  assert.equal(Array.from(cleanMessage('x'.repeat(900))).length, 500);
+  // эмодзи (2 UTF-16 символа) не режутся пополам
+  const cut = cleanMessage('💗'.repeat(600));
+  assert.equal(Array.from(cut).length, 500);
+  assert.ok(!/[\ud800-\udbff]$/.test(cut));
 });
