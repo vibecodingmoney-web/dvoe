@@ -7,7 +7,7 @@ import { validateInitData, safeEqual } from '../src/auth.js';
 import { addDays, addMonths, daysBetween, diffYMD, isValidDate, nowInTz } from '../src/dates.js';
 import { buildMilestones, milestoneInfo } from '../src/milestones.js';
 import { PHRASES } from '../src/content.js';
-import { cleanName, cleanMessage, esc, plural } from '../src/util.js';
+import { cleanName, cleanMessage, esc, plural, isUnreachableError, isButtonError } from '../src/util.js';
 
 /* ---------- подпись Telegram ---------- */
 
@@ -164,4 +164,38 @@ test('cleanMessage: личный текст «Думаю о тебе»', () => {
   const cut = cleanMessage('💗'.repeat(600));
   assert.equal(Array.from(cut).length, 500);
   assert.ok(!/[\ud800-\udbff]$/.test(cut));
+});
+
+test('уведомления: когда человека считаем недоступным для бота', () => {
+  // человек заблокировал бота / не начинал диалог
+  assert.equal(isUnreachableError({ error_code: 403, description: 'Forbidden: bot was blocked by the user' }), true);
+  assert.equal(isUnreachableError({ error_code: 403, description: "Forbidden: bot can't initiate conversation with a user" }), true);
+  assert.equal(isUnreachableError({ error_code: 400, description: 'Bad Request: chat not found' }), true);
+  // а это — наши ошибки, на доступности человека они не сказываются
+  assert.equal(isUnreachableError({ error_code: 400, description: "Bad Request: can't parse entities: Unsupported start tag" }), false);
+  assert.equal(isUnreachableError({ error_code: 400, description: 'Bad Request: BUTTON_URL_INVALID' }), false);
+  assert.equal(isUnreachableError({ error_code: 400, description: 'Bad Request: message is too long' }), false);
+  assert.equal(isUnreachableError({ error_code: 429, description: 'Too Many Requests: retry after 5' }), false);
+  assert.equal(isUnreachableError({ error_code: 500 }), false);
+  assert.equal(isUnreachableError(new Error('network down')), false);
+  assert.equal(isUnreachableError(null), false);
+});
+
+test('уведомления: ошибка кнопки отличается от ошибки человека', () => {
+  assert.equal(isButtonError({ error_code: 400, description: 'Bad Request: BUTTON_URL_INVALID' }), true);
+  assert.equal(isButtonError({ error_code: 400, description: 'Bad Request: WEB_APP_URL_INVALID' }), true);
+  assert.equal(isButtonError({ error_code: 400, description: 'Bad Request: chat not found' }), false);
+  assert.equal(isButtonError({ error_code: 403, description: 'Forbidden: bot was blocked by the user' }), false);
+});
+
+test('«Думаю о тебе»: текст с разметкой не ломает HTML-сообщение Telegram', () => {
+  const evil = '<b>привет</b> & <script>alert(1)</script> "кавычки"';
+  const html = `💌 <b>Думаю о тебе</b>\n\n<i>${esc(cleanMessage(evil))}</i>`;
+  // внутри <i> не остаётся ни одного «живого» тега, кроме собственных <b> и <i>
+  const tags = html.match(/<\/?[a-z][^>]*>/gi);
+  assert.deepEqual(tags, ['<b>', '</b>', '<i>', '</i>']);
+  assert.ok(html.length < 4096);
+  // самое длинное сообщение (500 символов, все — спецсимволы) тоже укладывается в лимит Telegram
+  const worst = `💌 <b>Думаю о тебе</b>\n\n<i>${esc(cleanMessage('&'.repeat(900)))}</i>`;
+  assert.ok(worst.length < 4096, `длина ${worst.length}`);
 });

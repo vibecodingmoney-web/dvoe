@@ -1,7 +1,8 @@
 // Телеграм-бот (grammY). Его работа: открывать Mini App, присылать уведомления, принимать приглашения.
-import { Bot, InlineKeyboard, GrammyError } from 'grammy';
+import { Bot, InlineKeyboard } from 'grammy';
 import { cfg } from './config.js';
 import { query } from './db.js';
+import { isUnreachableError, isButtonError } from './util.js';
 
 // Заглушка нужна, чтобы импорт не падал без токена; реальную проверку делает server.js.
 export const bot = new Bot(cfg.botToken || 'missing:token');
@@ -19,20 +20,41 @@ export function shareKb(url, text = 'Отправить приглашение �
 
 /** Отправить сообщение пользователю. Никогда не бросает ошибку; true — доставлено. */
 export async function notify(userId, html, keyboard) {
-  try {
-    await bot.api.sendMessage(userId, html, {
-      parse_mode: 'HTML',
-      link_preview_options: { is_disabled: true },
-      reply_markup: keyboard,
-    });
-    return true;
-  } catch (err) {
-    if (err instanceof GrammyError && (err.error_code === 403 || err.error_code === 400)) {
-      // 403 — бот заблокирован или человек ни разу не нажимал /start; 400 — чат не найден
-      await query('UPDATE users SET can_notify = FALSE WHERE id = $1', [userId]).catch(() => {});
+  let markup = keyboard;
+  let retried = false;
+  let withoutButton = false;
+
+  for (;;) {
+    try {
+      await bot.api.sendMessage(userId, html, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        reply_markup: markup,
+      });
+      // Дошло — значит, писать можно: поднимаем флаг, если он был сброшен раньше.
+      query('UPDATE users SET can_notify = TRUE WHERE id = $1 AND NOT can_notify', [userId]).catch(() => {});
+      return true;
+    } catch (err) {
+      // Лимит Telegram (429): коротко ждём, сколько просят, и пробуем ещё раз — иначе напоминание потеряется.
+      const wait = Number(err?.parameters?.retry_after);
+      if (!retried && err?.error_code === 429 && wait > 0 && wait <= 10) {
+        retried = true;
+        await new Promise((r) => setTimeout(r, wait * 1000 + 200));
+        continue;
+      }
+      // Неверная кнопка (например, PUBLIC_URL без https): шлём текст без кнопки, а не теряем сообщение.
+      if (!withoutButton && markup && isButtonError(err)) {
+        withoutButton = true;
+        markup = undefined;
+        continue;
+      }
+      // 403 — бот заблокирован или диалог не начат; 400 «chat not found» — чата нет. Остальные ошибки флаг не трогают.
+      if (isUnreachableError(err)) {
+        await query('UPDATE users SET can_notify = FALSE WHERE id = $1', [userId]).catch(() => {});
+      }
+      console.warn(`[notify] не доставлено ${userId}:`, err?.description || err?.message || err);
+      return false;
     }
-    console.warn(`[notify] не доставлено ${userId}:`, err?.description || err?.message || err);
-    return false;
   }
 }
 

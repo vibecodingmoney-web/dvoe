@@ -25,6 +25,22 @@ export function cleanText(raw, max) {
     .slice(0, max);
 }
 
+/**
+ * Telegram сообщает, что этому человеку писать нельзя: бот заблокирован (403), чат не найден / аккаунт удалён (400).
+ * Прочие 400 (кривая кнопка, ошибка разметки) к человеку отношения не имеют и флаг «можно писать» не сбрасывают.
+ */
+export function isUnreachableError(err) {
+  const code = err?.error_code;
+  if (code === 403) return true;
+  const d = String(err?.description || '').toLowerCase();
+  return code === 400 && /chat not found|user is deactivated|peer_id_invalid/.test(d);
+}
+
+/** 400 из-за кнопки (например, PUBLIC_URL не https): сообщение стоит отправить без кнопки, а не терять. */
+export function isButtonError(err) {
+  return err?.error_code === 400 && /button_url_invalid|web_app_url_invalid|button_data_invalid/i.test(String(err?.description || ''));
+}
+
 export const MAX_THOUGHT = 500;
 
 /**
