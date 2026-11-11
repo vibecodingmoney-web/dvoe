@@ -113,7 +113,7 @@ api.post('/pair/join', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-api.post('/thought', wrap(async (req, res) => res.json(await sendThought(req.user))));
+api.post('/thought', wrap(async (req, res) => res.json(await sendThought(req.user, req.body))));
 
 // Профиль (имя, возраст, пол) и даты пары.
 api.patch('/me', wrap(async (req, res) => {
