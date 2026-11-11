@@ -6,8 +6,7 @@ import { cfg, inviteLink, shareUrl, isAdmin } from './config.js';
 import { todayStr, daysBetween, addDays, diffYMD, isValidDate } from './dates.js';
 import { milestoneInfo } from './milestones.js';
 import { upcoming, calendarItems, weddingInfo } from './calendar.js';
-import { PHRASES } from './content.js';
-import { cleanName, parseAge, parseGender, pick, esc } from './util.js';
+import { cleanName, cleanMessage, parseAge, parseGender, esc } from './util.js';
 import { notify, openAppKb } from './bot.js';
 import { HttpError } from './errors.js';
 import { loadPairContext, loadActiveContext } from './context.js';
@@ -193,16 +192,13 @@ export async function buildState(user, tgUser) {
 
 /* ---------- «Думаю о тебе» ---------- */
 
-export async function sendThought(user) {
+/** Отправить партнёру своё сообщение. Текст пишет сам отправитель (поле `text`), заготовленных фраз больше нет. */
+export async function sendThought(user, body = {}) {
+  const phrase = cleanMessage(body?.text);
+  if (!phrase) throw new HttpError(400, 'empty_text');
+
   const { pair, partner } = await loadActiveContext(user);
   const cooldownSec = cfg.thoughtCooldownMin * 60;
-
-  // Берём фразу, которой не было среди последних 12 отправленных этим человеком.
-  const recent = (
-    await query('SELECT phrase FROM thoughts WHERE from_user = $1 ORDER BY created_at DESC LIMIT 12', [user.id])
-  ).rows.map((r) => r.phrase);
-  const fresh = PHRASES.filter((p) => !recent.includes(p));
-  const phrase = pick(fresh.length ? fresh : PHRASES);
 
   // Проверка кулдауна и вставка — атомарно (блокировка по id пользователя защищает от двойного тапа).
   const inserted = await tx(async (c) => {
@@ -226,7 +222,7 @@ export async function sendThought(user) {
 
   const delivered = await notify(
     partner.id,
-    `💌 <b>${esc(user.name)}</b> думает о тебе\n\n<i>«${esc(phrase)}»</i>`,
+    `💌 <b>Думаю о тебе</b>\n\n<i>${esc(phrase)}</i>`,
     openAppKb(),
   );
   return { phrase, delivered, cooldownSec };
