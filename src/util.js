@@ -25,6 +25,25 @@ export function cleanText(raw, max) {
     .slice(0, max);
 }
 
+export const MAX_THOUGHT = 500;
+
+/**
+ * Личное сообщение «Думаю о тебе»: переносы строк сохраняются (не больше одной пустой подряд),
+ * управляющие символы убираются, длина — не больше max символов (эмодзи не режутся пополам).
+ * Угловые скобки здесь не трогаем: при выводе в Telegram и в приложении текст экранируется через esc().
+ */
+export function cleanMessage(raw, max = MAX_THOUGHT) {
+  if (typeof raw !== 'string') return '';
+  const text = raw
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ ?\n ?/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return Array.from(text).slice(0, max).join('').trim();
+}
+
 /** Имя пользователя: максимум 30 символов. */
 export function cleanName(raw) {
   return cleanText(raw, 30);
