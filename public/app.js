@@ -66,6 +66,7 @@ const ICON = {
 };
 
 const ERR = {
+  empty_text: 'Напиши пару слов для любимого человека ✍️',
   bad_name: 'Введи имя — до 30 символов',
   bad_date: 'Проверь дату',
   bad_age: 'Возраст — от 14 до 99',
@@ -116,6 +117,7 @@ const S = {
   petFood: false, // открыт ли выбор еды
   sheet: null, // открытое окно: { mode:'pick'|'form', item }
   cooldownEnd: 0,
+  draft: '', // текст «Думаю о тебе», который человек уже набрал (чтобы не терялся при обновлении экрана)
   lastSent: null,
   lastRefresh: 0,
   countedUp: false,
@@ -481,6 +483,7 @@ function homeView() {
     <button id="heart" class="heart-btn ${cooldownLeft() > 0 ? 'cool' : ''}" data-act="thought" aria-label="Отправить «Думаю о тебе»">${ICON.heart}</button>
     <div class="t-title">Думаю о тебе</div>
     <div class="t-sub" id="t-sub">${esc(thoughtSub())}</div>
+    <textarea id="thought-text" class="thought-input" rows="2" maxlength="500" placeholder="Напиши, что у тебя на сердце…" aria-label="Текст сообщения">${esc(S.draft)}</textarea>
     <div class="sent" id="sent">${S.lastSent ? `«${esc(S.lastSent)}»` : ''}</div>
   </div>`;
 
@@ -821,6 +824,8 @@ function render() {
 function renderTab(soft = false) {
   const view = $('#view');
   if (!view) return;
+  // Пока человек печатает сообщение, фоновое обновление не должно сбрасывать фокус и клавиатуру.
+  if (soft && document.activeElement?.id === 'thought-text') return;
   const html = { home: homeView, cal: calendarView, pet: petView, us: usView }[S.tab]();
   view.className = soft ? 'noanim' : '';
   view.innerHTML = `<div class="screen">${html}</div>`;
@@ -966,11 +971,24 @@ const ACTIONS = {
       toast(`Снова можно через ${fmtCool(left)} ⏳`);
       return;
     }
+    const ta = $('#thought-text');
+    const text = (ta ? ta.value : S.draft).trim();
+    if (!text) {
+      haptic('warning');
+      toast(ERR.empty_text);
+      ta?.focus();
+      return;
+    }
     S.busy = true;
     try {
-      const r = await api('/thought', { method: 'POST' });
+      const r = await api('/thought', { method: 'POST', body: { text } });
       S.lastSent = r.phrase;
       S.cooldownEnd = Date.now() + r.cooldownSec * 1000;
+      S.draft = '';
+      if (ta) {
+        ta.value = '';
+        ta.style.height = '';
+      }
       burst(btn);
       haptic('success');
       const sent = $('#sent');
@@ -1239,6 +1257,7 @@ for (const root of [app, $('#sheet')]) {
   });
   // подсветка выбранного пола / значка
   root.addEventListener('change', (e) => {
+    if (e.target.id === 'thought-text') S.draft = e.target.value;
     const t = e.target;
     if (t.type === 'radio') {
       if (t.name === 'gender') S.gender = t.value;
@@ -1246,6 +1265,15 @@ for (const root of [app, $('#sheet')]) {
     }
   });
 }
+
+// Поле «Думаю о тебе»: запоминаем набранное и растим высоту по тексту.
+app.addEventListener('input', (e) => {
+  const ta = e.target;
+  if (ta.id !== 'thought-text') return;
+  S.draft = ta.value;
+  ta.style.height = 'auto';
+  ta.style.height = `${Math.min(ta.scrollHeight + 2, 170)}px`;
+});
 
 /* ====================== запуск ====================== */
 
